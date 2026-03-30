@@ -430,6 +430,3 @@
     (newline)))
 (main)
 
-;/* This is comment */
-;x := 1 + 2 * 3;
-;PRINT x;
