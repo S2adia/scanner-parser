@@ -1,0 +1,428 @@
+#lang racket
+;struct to represent tokens- token type and value
+(struct token (type value))
+;discards all characters that are part of comment and shows error if comment is not closed
+(define (strip-comments source) 
+  (define chars (string->list source)) ;convert string to list of characters
+  (let loop ([cs chars] [result '()] [in-comment? #f])
+    (cond
+      ;end of input
+      [(null? cs) 
+       (if in-comment? ;#t
+           ;string has ended but comment is unclosed
+           (error "Lexical error: unterminated comment")
+           (list->string (reverse result)))] ;in-comment? #f
+      ;inside comment
+      [in-comment? ;in-comment? #t
+       (if (and (char=? (car cs) #\*) ;checks if first character is * 
+                (not (null? (cdr cs))) ;after removing the first item, is the rest of the list empty? If it’s not empty → #t
+                (char=? (cadr cs) #\/)) ;takes the second character and checks if it's /
+           ;end comment
+           (loop (cddr cs) result #f) ;remove the first two characters * and /
+           ;still inside comment
+           (loop (cdr cs) result #t))] ;process rest of the list after removing the first one character
+
+      ;outside comment
+      [else
+       (if (and (char=? (car cs) #\/)
+                (not (null? (cdr cs)))
+                (char=? (cadr cs) #\*))
+           ;;start comment
+           (loop (cddr cs) result #t)
+           ;;normal char
+           (loop (cdr cs) (cons (car cs) result) #f))]))) ;keep that character in the result.
+
+;converts clean source string into tokens
+(define (tokenize source)
+  (define src (string->list source)) ;converts the input string into list of characters
+  (define len (length src)) 
+  ;helper to get char at position i
+  (define (at i) 
+    (if (< i len) (list-ref src i) #f))
+  
+  ;helper:checks if char is a letter
+  (define (letter? c)
+    (and c (or (char-alphabetic? c))))
+
+  ;helper:checks if char is a digit
+  (define (digit? c) 
+    (and c (char-numeric? c)))
+
+  ;helper:checks if char is a valid ID-leading char
+  (define (id-lead? c)
+    (and c (or (char-alphabetic? c) ;does not start with a digit
+               (char=? c #\_))))
+
+  ;helper:checks if char is a valid ID-tail char
+  (define (id-tail? c) 
+    (and c (or (char-alphabetic? c)
+               (char-numeric? c)
+               (char=? c #\_)
+               (char=? c #\-))))
+  
+  ;main scanning loop
+  (let scan ([i 0] [tokens '()]) ;scan is a recursive function to scan the string from i
+    (cond
+      ;end of input
+      [(>= i len) 
+       (reverse (cons (token 'EOF #f) tokens))]
+      
+      ;whitespace: skip
+      [(and (at i) (char-whitespace? (at i)))
+       (scan (+ i 1) tokens)]
+
+      ; := 
+      [(and (char=? (at i) #\:)
+            (equal? (at (+ i 1)) #\=))
+       (scan (+ i 2) (cons (token 'ASSIGN #f) tokens))]
+
+      ; !=
+      [(and (char=? (at i) #\!)
+            (equal? (at (+ i 1)) #\=))
+       (scan (+ i 2) (cons (token 'NEQ #f) tokens))]
+
+      ; >=
+      [(and (char=? (at i) #\>)
+            (equal? (at (+ i 1)) #\=))
+       (scan (+ i 2) (cons (token 'GEQ #f) tokens))]
+
+      ; <=
+      [(and (char=? (at i) #\<)
+            (equal? (at (+ i 1)) #\=))
+       (scan (+ i 2) (cons (token 'LEQ #f) tokens))]
+
+      ;check for unmatched comment closer
+      [(and (char=? (at i) #\*)
+            (equal? (at (+ i 1)) #\/))
+       (error "Lexical error: unexpected */ (unmatched comment closer)")]
+
+      [(char=? (at i) #\;)
+       (scan (+ i 1) (cons (token 'SEMI #f) tokens))]
+      [(char=? (at i) #\()
+       (scan (+ i 1) (cons (token 'LPAREN #f) tokens))]
+      [(char=? (at i) #\))
+       (scan (+ i 1) (cons (token 'RPAREN #f) tokens))]
+      [(char=? (at i) #\*)
+       (scan (+ i 1) (cons (token 'MUL #f) tokens))]
+      [(char=? (at i) #\/)
+       (scan (+ i 1) (cons (token 'DIV #f) tokens))]
+      [(char=? (at i) #\>)
+       (scan (+ i 1) (cons (token 'GT #f) tokens))]
+      [(char=? (at i) #\<)
+       (scan (+ i 1) (cons (token 'LT #f) tokens))]
+      [(char=? (at i) #\=)
+       (scan (+ i 1) (cons (token 'EQ #f) tokens))]
+
+      ; ':' is a lexical error
+      [(char=? (at i) #\:)
+       (error (format "Lexical error at position ~a: bare ':' is not a valid token" i))]
+
+      ; '!' is a lexical error 
+      [(char=? (at i) #\!)
+       (error (format "Lexical error at position ~a: '!' " i))]
+      ;check if '+' or '-' is unary or binary operator
+       [(or (digit? (at i))
+           (and (or (char=? (at i) #\+) (char=? (at i) #\-))
+                (let ([prev (if (null? tokens) #f (token-type (car tokens)))]) 
+                  (not (member prev '(ID INT FP RPAREN)))))) 
+       (let-values ([(tok next-i) (scan-number src i len)])
+         (scan next-i (cons tok tokens)))]
+
+      [(char=? (at i) #\+)
+       (scan (+ i 1) (cons (token 'ADD #f) tokens))]
+      [(char=? (at i) #\-)
+       (scan (+ i 1) (cons (token 'SUB #f) tokens))]
+
+      ;identifiers and keywords
+      [(id-lead? (at i))
+       (let-values ([(tok next-i) (scan-id src i len)])
+         (scan next-i (cons tok tokens)))]
+
+      ;unknown character
+      [else
+       (error (format "Lexical error: unexpected character '~a' at position ~a"
+                      (at i) i))])))
+
+;reads INT or FP token starting at position i - no leading 0 and multiple decimals and must have digits on both side of decimal point
+(define (scan-number chars i len)
+  ;helper:get character at position
+  (define (at k) (if (< k len) (list-ref chars k) #f))
+  ;helper: check digit
+  (define (digit? c) (and c (char-numeric? c)))
+  (define-values (sign sign-end)
+    (cond
+      [(and (at i) (char=? (at i) #\+)) (values "+" (+ i 1))]
+      [(and (at i) (char=? (at i) #\-)) (values "-" (+ i 1))]
+      [else (values "" i)]))
+  ;must have digit after sign
+  (unless (digit? (at sign-end))
+    (error (format "Lexical error: expected digit after sign '~a' at position ~a" sign i)))
+  ;read integer part
+  (define int-start sign-end)
+  (let collect-int ([k int-start] [int-digits '()])
+    (if (digit? (at k))
+        (collect-int (+ k 1) (cons (at k) int-digits))
+        (let ([int-str (list->string (reverse int-digits))])
+          ;check leading zero 
+          (when (and (> (string-length int-str) 1)
+                     (char=? (string-ref int-str 0) #\0))
+            (error (format "Lexical error: integer cannot have leading zeros near position ~a" i)))
+          ;check for floating point
+          (if (and (at k) (char=? (at k) #\.))
+              (let ([dot-pos k])
+                (let collect-frac ([j (+ dot-pos 1)] [frac-digits '()])
+                  (if (digit? (at j))
+                      (collect-frac (+ j 1) (cons (at j) frac-digits))
+                      (begin
+                        ;must have digits after dot
+                        (when (null? frac-digits)
+                          (error (format "Lexical error: FP number must have digits after '.' near position ~a" dot-pos)))
+
+                        ;second dot isn't allowed
+                        (when (and (at j) (char=? (at j) #\.))
+                          (error (format "Lexical error: FP number cannot have multiple decimal points near position ~a" j)))
+
+                        (let* ([frac-str (list->string (reverse frac-digits))]
+                               [num-str  (string-append sign int-str "." frac-str)]
+                               [num-val  (string->number num-str)])
+
+                          (values (token 'FP num-val) j))))))
+              ;integar number
+              (let* ([num-str (string-append sign int-str)]
+                     [num-val (string->number num-str)])
+
+                (values (token 'INT num-val) k)))))))
+
+;reads identifier or keyword token
+(define (scan-id chars i len)
+  (define (at k) (if (< k len) (list-ref chars k) #f))
+  (define (id-tail? c)
+    (and c (or (char-alphabetic? c)
+               (char-numeric? c)
+               (char=? c #\_)
+               (char=? c #\-))))
+
+  (let collect ([k i] [acc '()])
+    (if (id-tail? (at k))
+        (collect (+ k 1) (cons (at k) acc))
+        (let ([word (list->string (reverse acc))])
+          (values (string->token word) k)))))
+
+;map to correct keyword or ID token
+(define (string->token word)
+  (case (string-upcase word)
+    [("IF")    (token 'IF    #f)]
+    [("THEN")  (token 'THEN  #f)]
+    [("ELSE")  (token 'ELSE  #f)]
+    [("END")   (token 'END   #f)]
+    [("WHILE") (token 'WHILE #f)]
+    [("DO")    (token 'DO    #f)]
+    [("PRINT") (token 'PRINT #f)]
+    [else      (token 'ID word)]))
+
+;parser state helpers
+
+;returns the first token without removing it
+(define (peek tokens)
+  (if (null? tokens)
+      (token 'EOF #f) ;returns EOF if list is empty
+      (car tokens)))
+(define (peek-type tokens)
+  (token-type (peek tokens)))
+
+;checks if the first token matches the expected-type, if yes then returns the remaining tokens otherwise raise syntax error
+(define (consume tokens expected-type)
+  (cond
+    [(null? tokens)
+     (error (format "Syntax error: expected ~a but reached end of input" expected-type))]
+    [(eq? (token-type (car tokens)) expected-type)
+     (cdr tokens)]
+    [else
+     (error (format "Syntax error: expected ~a but found ~a (value: ~a)"
+                    expected-type
+                    (token-type (car tokens))
+                    (token-value (car tokens))))]))
+
+
+;grammar functions
+
+;ensures all tokens have been consumed
+(define (parse-program tokens)
+  (define-values (stmts remaining) (parse-stmt-list tokens)) 
+  (unless (eq? (peek-type remaining) 'EOF)
+    (error (format "Syntax error: unexpected token ~a after end of program"
+                   (token-type (peek remaining)))))
+  (cons 'program stmts))
+
+;parse statements untill stop symbol - END, ELSE, EOF
+(define (parse-stmt-list tokens)
+  (let loop ([toks tokens] [stmts '()])
+    (define pt (peek-type toks))
+    (if (member pt '(END ELSE EOF))
+        (values (reverse stmts) toks)
+        (let-values ([(stmt rest) (parse-statement toks)])
+          (loop rest (cons stmt stmts))))))
+
+;peeks at the first token to branch logic
+(define (parse-statement tokens)
+  (case (peek-type tokens)
+    [(IF)    (parse-if-stmt    tokens)]
+    [(WHILE) (parse-while-stmt tokens)]
+    [(PRINT) (parse-print-stmt tokens)]
+    [(ID)    (parse-assign-stmt tokens)]
+    [else
+     (error (format "Syntax error: unexpected token ~a; expected a statement"
+                    (token-type (peek tokens))))]))
+
+;"IF" <Comparison> "THEN" <StmtList> "ELSE" <StmtList> "END"
+(define (parse-if-stmt tokens)
+  (define toks1 (consume tokens 'IF))
+  (define-values (cond-expr toks2) (parse-comparison toks1))
+  (define toks3 (consume toks2 'THEN))
+  (define-values (then-stmts toks4) (parse-stmt-list toks3))
+  (define toks5 (consume toks4 'ELSE))
+  (define-values (else-stmts toks6) (parse-stmt-list toks5))
+  (define toks7 (consume toks6 'END))
+  (values `(if ,cond-expr (then ,@then-stmts) (else ,@else-stmts)) toks7))
+
+;"WHILE" <Comparison> "DO" <StmtList> "END"
+(define (parse-while-stmt tokens)
+  (define toks1 (consume tokens 'WHILE))
+  (define-values (cond-expr toks2) (parse-comparison toks1))
+  (define toks3 (consume toks2 'DO))
+  (define-values (body-stmts toks4) (parse-stmt-list toks3))
+  (define toks5 (consume toks4 'END))
+  (values `(while ,cond-expr ,@body-stmts) toks5))
+
+;<PrintStmt> ::= "PRINT" <Expression> ";"
+(define (parse-print-stmt tokens)
+  (define toks1 (consume tokens 'PRINT))
+  (define-values (expr toks2) (parse-expression toks1))
+  (define toks3 (consume toks2 'SEMI))
+  (values `(print ,expr) toks3))
+
+;<Comparison> ::= <Expression> <RelOp> <Expression>
+(define (parse-comparison tokens)
+  (define-values (left toks1) (parse-expression tokens))
+  (define rel-tok (peek toks1))
+  (unless (member (token-type rel-tok) '(EQ NEQ GT GEQ LT LEQ))
+    (error (format "Syntax error: expected a relational operator but found ~a"
+                   (token-type rel-tok))))
+  (define op  (relop->symbol (token-type rel-tok)))
+  (define toks2 (cdr toks1))
+  (define-values (right toks3) (parse-expression toks2))
+  (values `(,op ,left ,right) toks3))
+(define (relop->symbol type)
+  (case type
+    [(EQ)  'eq]
+    [(NEQ) 'neq]
+    [(GT)  'gt]
+    [(GEQ) 'geq]
+    [(LT)  'lt]
+    [(LEQ) 'leq]
+    [else  (error (format "Unknown relop: ~a" type))]))
+
+;implements Left-Associativity. calls parse-term. It then loops as long as it peeks a + or -
+;<Expression> ::= <Term> { ("+" | "-") <Term> }
+(define (parse-expression tokens)
+  (define-values (left toks1) (parse-term tokens))
+  (let loop ([acc left] [toks toks1])
+    (case (peek-type toks)
+      [(ADD)
+       (define toks2 (consume toks 'ADD))
+       (define-values (right toks3) (parse-term toks2))
+       (loop `(+ ,acc ,right) toks3)]
+      [(SUB)
+       (define toks2 (consume toks 'SUB))
+       (define-values (right toks3) (parse-term toks2))
+       (loop `(- ,acc ,right) toks3)]
+      [else
+       (values acc toks)])))
+
+;<AssignStmt> ::= ID ":=" <Expression> ";"
+(define (parse-assign-stmt tokens)
+  (define id-tok (peek tokens)) ;;id-tok = (ID "x")
+  (define toks1  (consume tokens 'ID))
+  (define toks2  (consume toks1  'ASSIGN))
+  (define-values (expr toks3) (parse-expression toks2))
+  (define toks4  (consume toks3 'SEMI))
+  (values `(assign ,(string->symbol (token-value id-tok)) ,expr) toks4))
+
+;calls parse-factor and loops as long as it peeks a * or /
+;<Term> ::= <Factor> { ("*" | "/") <Factor> }
+(define (parse-term tokens)
+  (define-values (left toks1) (parse-factor tokens))
+  (let loop ([acc left] [toks toks1])
+    (case (peek-type toks)
+      [(MUL)
+       (define toks2 (consume toks 'MUL))
+       (define-values (right toks3) (parse-factor toks2))
+       (loop `(* ,acc ,right) toks3)]
+      [(DIV)
+       (define toks2 (consume toks 'DIV))
+       (define-values (right toks3) (parse-factor toks2))
+       (loop `(/ ,acc ,right) toks3)]
+      [else
+       (values acc toks)])))
+
+;handles the highest precedence.
+;<Factor> ::= ID | Number | "(" <Expression> ")"
+(define (parse-factor tokens)
+  (define tok (peek tokens))
+  (case (token-type tok)
+    ;if peeks a Number or ID it returns that leaf node
+    [(ID)
+     (values (string->symbol (token-value tok)) (cdr tokens))]
+    [(INT FP)
+     (values (token-value tok) (cdr tokens))]
+    ;if it peeks an open parenthesis,calls parse-expression (the recursive leap), and then calls consume on a matching ).
+    [(LPAREN)
+     (define toks1 (consume tokens 'LPAREN))
+     (define-values (expr toks2) (parse-expression toks1))
+     (define toks3 (consume toks2 'RPAREN))
+     (values expr toks3)]
+    [else
+     (error (format "Syntax error: expected an expression factor (ID, number, or '(') but found ~a"
+                    (token-type tok)))]))
+
+;build AST from source string
+(define (run-parser source)
+  (define clean  (strip-comments source))
+  (define tokens (tokenize clean))
+  (parse-program tokens))
+
+;reads file and runs the parser
+(define (parse-file filename)
+  (define source (file->string filename))
+  (with-handlers
+    ([exn:fail?
+      (lambda (e)
+        (displayln (format "ERROR in ~a:" filename))
+        (displayln (exn-message e))
+        #f)])
+    (define ast (run-parser source))
+    (displayln (format "SUCCESS: ~a" filename))
+    (pretty-print ast)
+    (newline)
+    ast))
+
+;run the test files
+(define (main)
+  (define test-files
+    '("Input1.txt"
+      "Input2.txt"
+      "Input3.txt"
+      "Input4.txt"
+      "Input5.txt"
+      "Input6.txt"
+      "Input7.txt"))
+
+  (for ([f test-files])
+    (displayln (make-string 50 #\-))
+    (if (file-exists? f)
+        (parse-file f)
+        (displayln (format "  (file not found: ~a)" f)))
+    (newline)))
+
+
+(main)

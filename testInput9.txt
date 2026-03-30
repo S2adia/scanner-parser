@@ -1,0 +1,4 @@
+/* This is a comment /* with a nested start symbol */
+x := -5; /* This is an INT */
+y := +10.25; /* This is an FP */
+PRINT x * y + 1; /* Order of operations check */
